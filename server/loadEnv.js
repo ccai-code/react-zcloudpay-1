@@ -43,9 +43,10 @@ function loadEnvFile(filePath) {
 function loadServerEnv() {
   const envPath = path.join(__dirname, '.env');
   loadEnvFile(envPath);
+  const publicEnvPath = path.join(__dirname, '.env.public');
+  loadEnvFile(publicEnvPath);
 }
 
 module.exports = {
   loadServerEnv
 };
-

@@ -1,44 +1,31 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { DealerServiceAccount, Plan } from '../types'
+import { useCallback, useEffect, useMemo, useRef, useState, Fragment } from 'react'
+import type { DealerServiceAccount, Plan, OrderItem } from '../types'
 import { formatTime } from '../utils/time'
+import { api } from '../utils/api'
 
 type Props = {
   dealerAccount: string
   accounts: DealerServiceAccount[]
+  orders: OrderItem[]
   onRefresh: () => void
-}
-
-type AccountLog = {
-  log_type: 'RECHARGE' | 'CONSUME' | string
-  delta_credits: number
-  balance: number
-  amount: number | null
-  order_no: string | null
-  transaction_id: string | null
-  remark: string | null
-  created_ts: number | null
 }
 
 function amountText(plan: Plan) {
   return plan === 'FORMAL' ? '¥1000（100000额度）' : '¥200（10000额度）'
 }
 
-export function RechargePage({ dealerAccount, accounts, onRefresh }: Props) {
+export function RechargePage({ dealerAccount, accounts, orders, onRefresh }: Props) {
   const [plan, setPlan] = useState<Plan>('TRIAL')
   const [targetAccount, setTargetAccount] = useState<string>('')
+  const [amountYuan, setAmountYuan] = useState<number>(1000)
   const [qrCode, setQrCode] = useState<string>('')
   const [outTradeNo, setOutTradeNo] = useState<string>('')
   const [statusText, setStatusText] = useState<string>('点击生成二维码')
   const [payState, setPayState] = useState<'idle' | 'paying' | 'paid'>('idle')
-  const [logsOpen, setLogsOpen] = useState(false)
-  const [logsAccountLabel, setLogsAccountLabel] = useState('')
-  const [logs, setLogs] = useState<AccountLog[]>([])
-  const [logsLoading, setLogsLoading] = useState(false)
-  const [logsError, setLogsError] = useState<string>('')
+  const [expandedAccounts, setExpandedAccounts] = useState<Set<string>>(new Set())
 
   const pollTimer = useRef<number | null>(null)
   const pollAbort = useRef<AbortController | null>(null)
-  const logsAbort = useRef<AbortController | null>(null)
   const onRefreshRef = useRef(onRefresh)
 
   const targets = useMemo(() => {
@@ -48,9 +35,27 @@ export function RechargePage({ dealerAccount, accounts, onRefresh }: Props) {
     }))
   }, [accounts])
 
+  const ordersByAccount = useMemo(() => {
+    const map: Record<string, OrderItem[]> = {}
+    for (const o of orders || []) {
+      const key = o.account
+      if (!map[key]) map[key] = []
+      map[key].push(o)
+    }
+    return map
+  }, [orders])
+
   useEffect(() => {
     onRefreshRef.current = onRefresh
   }, [onRefresh])
+
+  useEffect(() => {
+    const next = new Set<string>()
+    for (const a of accounts || []) {
+      if (a?.account) next.add(a.account)
+    }
+    setExpandedAccounts(next)
+  }, [accounts])
 
   useEffect(() => {
     return () => {
@@ -58,8 +63,6 @@ export function RechargePage({ dealerAccount, accounts, onRefresh }: Props) {
       pollTimer.current = null
       if (pollAbort.current) pollAbort.current.abort()
       pollAbort.current = null
-      if (logsAbort.current) logsAbort.current.abort()
-      logsAbort.current = null
     }
   }, [])
 
@@ -75,7 +78,7 @@ export function RechargePage({ dealerAccount, accounts, onRefresh }: Props) {
       if (!outTradeNo) return
       if (pollAbort.current) pollAbort.current.abort()
       pollAbort.current = new AbortController()
-      fetch(`/api/order-status?out_trade_no=${encodeURIComponent(outTradeNo)}`, { signal: pollAbort.current.signal })
+      api(`/api/order-status?out_trade_no=${encodeURIComponent(outTradeNo)}`, { signal: pollAbort.current.signal })
         .then(r => r.json())
         .then(d => {
           if (!d?.ok) return
@@ -121,13 +124,14 @@ export function RechargePage({ dealerAccount, accounts, onRefresh }: Props) {
       setQrCode('')
       setOutTradeNo('')
 
-      fetch('/pay', {
+      api('/pay', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           account: dealerAccount,
           plan: nextPlan,
-          targetAccount: nextPlan === 'FORMAL' ? target : undefined
+          targetAccount: nextPlan === 'FORMAL' ? target : undefined,
+          amountYuan: nextPlan === 'FORMAL' ? amountYuan : undefined
         })
       })
         .then(r => r.json())
@@ -173,8 +177,28 @@ export function RechargePage({ dealerAccount, accounts, onRefresh }: Props) {
             >
               额度充值
             </button>
-            <div className="muted" style={{ marginLeft: 'auto' }}>
-              {amountText(plan)}
+            <div className="row" style={{ marginLeft: 'auto', gap: 8, alignItems: 'center' }}>
+              {plan === 'FORMAL' ? (
+                <>
+                  <span className="muted">金额</span>
+                  <input
+                    type="number"
+                    min={1000}
+                    step={1000}
+                    value={amountYuan}
+                    onChange={e => {
+                      const v = Math.max(1000, Math.round(Number(e.target.value) || 1000))
+                      const stepped = Math.round(v / 1000) * 1000
+                      setAmountYuan(stepped)
+                    }}
+                    style={{ width: 90 }}
+                  />
+                  <span className="muted">元</span>
+                  <span className="muted">对应额度：{(amountYuan / 1000) * 100000}次</span>
+                </>
+              ) : (
+                <div className="muted">{amountText(plan)}</div>
+              )}
             </div>
           </div>
 
@@ -224,109 +248,92 @@ export function RechargePage({ dealerAccount, accounts, onRefresh }: Props) {
       </div>
 
       <div className="card">
-        <div className="card-title">购买记录</div>
-        {accounts.length === 0 ? (
+        <div className="card-title">充值记录</div>
+        {orders.length === 0 ? (
           <div className="empty">暂无记录</div>
         ) : (
-          <div className="table-wrap table-wrap-limited">
+          <div className="table-wrap table-wrap-limited" style={{ height: 420, overflowY: 'auto' }}>
             <table className="table">
               <thead>
                 <tr>
-                  <th>账号</th>
-                  <th>密码</th>
-                  <th>当前额度</th>
-                  <th>最新充值</th>
-                  <th>操作</th>
+                  <th style={{ width: 28 }}></th>
+                  <th>时间</th>
+                  <th>用户名</th>
+                  <th>用户密码</th>
+                  <th>充值金额</th>
+                  <th>购买额度</th>
+                  <th>累计购买</th>
                 </tr>
               </thead>
               <tbody>
-                {accounts.map(a => (
-                  <tr key={a.account}>
-                    <td>{a.username || a.account}</td>
-                    <td>{a.password || '-'}</td>
-                    <td>
-                      <button
-                        className="btn btn-outline"
-                        style={{ padding: '6px 10px' }}
-                        onClick={() => openLogs(a.account, a.username || a.account)}
-                      >
-                        {a.balance}
-                      </button>
-                    </td>
-                    <td>{a.last_recharge_ts ? formatTime(a.last_recharge_ts) : '-'}</td>
-                    <td>
-                      <div className="table-actions">
-                        <button className="btn btn-outline" onClick={() => quickTopup(a.account, 'FORMAL')}>
-                          续费¥1000
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {Object.keys(ordersByAccount).map(accountId => {
+                  const list = ordersByAccount[accountId] || []
+                  const acc = accounts.find(a => a.account === accountId)
+                  const username = acc?.username || accountId
+                  const totalCredits = list.reduce((sum, o) => sum + (o.amount >= 1000 ? 100000 : 10000), 0)
+                  const collapsed = !expandedAccounts.has(accountId)
+                  return (
+                    <Fragment key={accountId}>
+                      {collapsed
+                        ? (
+                          <tr>
+                            <td>
+                              <button
+                                className="btn btn-outline"
+                                style={{ padding: '0 6px', minWidth: 0 }}
+                                onClick={() => {
+                                  const next = new Set(expandedAccounts)
+                                  next.add(accountId)
+                                  setExpandedAccounts(next)
+                                }}
+                                title="展开"
+                              >
+                                ▸
+                              </button>
+                            </td>
+                            <td colSpan={6}>{username}（已折叠）</td>
+                          </tr>
+                        )
+                        : list.map((o, idx) => {
+                            const purchaseCredits = o.amount >= 1000 ? 100000 : 10000
+                            const pwd = o.password || acc?.password || '-'
+                            const isFirst = idx === 0
+                            return (
+                              <tr key={`${o.out_trade_no}_${idx}`}>
+                                <td>
+                                  {isFirst ? (
+                                    <button
+                                      className="btn btn-outline"
+                                      style={{ padding: '0 6px', minWidth: 0 }}
+                                      onClick={() => {
+                                        const next = new Set(expandedAccounts)
+                                        next.delete(accountId)
+                                        setExpandedAccounts(next)
+                                      }}
+                                      title="折叠"
+                                    >
+                                      ▾
+                                    </button>
+                                  ) : null}
+                                </td>
+                                <td>{formatTime(o.created_ts)}</td>
+                                <td>{username}</td>
+                                <td>{pwd}</td>
+                                <td>¥{o.amount}</td>
+                                <td>{purchaseCredits}次</td>
+                                <td>{totalCredits}次</td>
+                              </tr>
+                            )
+                          })}
+                    </Fragment>
+                  )
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
-
-      {logsOpen && (
-        <div
-          className="modal-overlay"
-          onClick={e => {
-            if (e.target === e.currentTarget) closeLogs()
-          }}
-        >
-          <div className="modal modal-logs">
-            <div className="modal-header">
-              <div className="card-title">额度日志</div>
-              <button className="btn btn-outline" onClick={closeLogs}>
-                关闭
-              </button>
-            </div>
-            <div className="modal-body" style={{ gridTemplateColumns: '1fr' }}>
-              <div className="muted" style={{ marginBottom: 10 }}>
-                账号：{logsAccountLabel}
-              </div>
-              {logsLoading ? (
-                <div className="empty">加载中…</div>
-              ) : logsError ? (
-                <div className="empty">{logsError}</div>
-              ) : logs.length === 0 ? (
-                <div className="empty">暂无日志</div>
-              ) : (
-                <div className="table-wrap table-wrap-no-scroll">
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th>时间</th>
-                        <th>类型</th>
-                        <th>变化</th>
-                        <th>余额</th>
-                        <th>金额</th>
-                        <th>备注/订单</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {logs.map((l, i) => (
-                        <tr key={`${l.order_no || ''}_${l.created_ts || ''}_${i}`}>
-                          <td>{l.created_ts ? formatTime(l.created_ts) : '-'}</td>
-                          <td>{l.log_type === 'RECHARGE' ? '充值' : l.log_type === 'CONSUME' ? '使用' : l.log_type}</td>
-                          <td style={{ fontWeight: 800, color: l.delta_credits >= 0 ? '#16a34a' : '#ef4444' }}>
-                            {l.delta_credits >= 0 ? `+${l.delta_credits}` : `${l.delta_credits}`}
-                          </td>
-                          <td>{l.balance}</td>
-                          <td>{l.amount === null ? '-' : `¥${l.amount}`}</td>
-                          <td>{l.remark || l.order_no || '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      
     </div>
   )
 
@@ -334,45 +341,5 @@ export function RechargePage({ dealerAccount, accounts, onRefresh }: Props) {
     setTargetAccount(account)
     setPlan(nextPlan)
   }
-
-  function closeLogs() {
-    setLogsOpen(false)
-    setLogsAccountLabel('')
-    setLogs([])
-    setLogsError('')
-    setLogsLoading(false)
-    if (logsAbort.current) logsAbort.current.abort()
-    logsAbort.current = null
-  }
-
-  function openLogs(accountId: string, label?: string) {
-    const a = accountId.trim()
-    if (!a) return
-    if (logsAbort.current) logsAbort.current.abort()
-    logsAbort.current = new AbortController()
-    setLogsOpen(true)
-    setLogsAccountLabel((label || a).trim() || a)
-    setLogs([])
-    setLogsError('')
-    setLogsLoading(true)
-
-    fetch(
-      `/api/dealer/account-logs?dealer_account=${encodeURIComponent(dealerAccount)}&account=${encodeURIComponent(a)}`,
-      { signal: logsAbort.current.signal }
-    )
-      .then(r => r.json())
-      .then(d => {
-        if (!d?.ok) {
-          setLogsError('日志获取失败')
-          setLogsLoading(false)
-          return
-        }
-        setLogs(Array.isArray(d.logs) ? d.logs : [])
-        setLogsLoading(false)
-      })
-      .catch(() => {
-        setLogsError('日志获取失败')
-        setLogsLoading(false)
-      })
-  }
+  
 }

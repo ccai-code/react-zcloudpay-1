@@ -2,13 +2,15 @@ import { useEffect, useState } from 'react'
 import './index.css'
 import { AuthCard } from './components/AuthCard'
 import { RechargePage } from './components/RechargePage'
-import type { DealerServiceAccount } from './types'
+import type { DealerServiceAccount, OrderItem } from './types'
 import { storage } from './utils/storage'
+import { api } from './utils/api'
 
 function App() {
   const [route, setRoute] = useState<'auth'|'dashboard'>('auth')
   const [session, setSession] = useState<{account: string} | null>(null)
   const [accounts, setAccounts] = useState<DealerServiceAccount[]>([])
+  const [orders, setOrders] = useState<OrderItem[]>([])
   const account = session?.account || ''
   const isAuth = route === 'auth'
 
@@ -23,6 +25,7 @@ function App() {
   useEffect(() => {
     if (!account) return
     refreshAccounts(account)
+    refreshOrders(account)
   }, [account])
 
   return (
@@ -51,7 +54,11 @@ function App() {
             <RechargePage
               dealerAccount={account}
               accounts={accounts}
-              onRefresh={() => refreshAccounts(account)}
+              orders={orders}
+              onRefresh={() => {
+                refreshAccounts(account)
+                refreshOrders(account)
+              }}
             />
           )}
         </div>
@@ -60,7 +67,7 @@ function App() {
   )
 
   function onLogin(account: string, password: string) {
-    fetch('/api/auth/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ account, password })})
+    api('/api/auth/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ account, password })})
       .then(r=>r.json()).then(d=>{
         if (!d?.ok) return alert('账号或密码错误')
         const s = { account }
@@ -68,19 +75,28 @@ function App() {
         storage.set('zwsk_session', s)
         setRoute('dashboard')
         refreshAccounts(account)
+        refreshOrders(account)
       })
   }
   function refreshAccounts(dealerAccount: string) {
-    fetch(`/api/dealer/accounts?dealer_account=${encodeURIComponent(dealerAccount)}`)
+    api(`/api/dealer/accounts?dealer_account=${encodeURIComponent(dealerAccount)}`)
       .then(r => r.json())
       .then(d => {
         if (d?.ok) setAccounts(d.accounts || [])
+      })
+  }
+  function refreshOrders(dealerAccount: string) {
+    api(`/api/dealer/orders?dealer_name=${encodeURIComponent(dealerAccount)}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d?.ok) setOrders(Array.isArray(d.orders) ? d.orders : [])
       })
   }
   function logout() {
     setSession(null)
     storage.set('zwsk_session', null)
     setAccounts([])
+    setOrders([])
     setRoute('auth')
   }
 }
