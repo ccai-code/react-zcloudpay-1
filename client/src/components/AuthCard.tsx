@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react'
-import { api } from '../utils/api'
 
 type Props = {
   onLogin: (account: string, password: string) => void
@@ -9,7 +8,7 @@ export function AuthCard({ onLogin }: Props) {
   const [account, setAccount] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
+  const [submitting] = useState(false)
 
   const canSubmit = useMemo(() => {
     return account.trim().length > 0 && password.length > 0

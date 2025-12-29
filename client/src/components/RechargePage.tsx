@@ -336,10 +336,4 @@ export function RechargePage({ dealerAccount, accounts, orders, onRefresh }: Pro
       
     </div>
   )
-
-  function quickTopup(account: string, nextPlan: Plan) {
-    setTargetAccount(account)
-    setPlan(nextPlan)
-  }
-  
 }
