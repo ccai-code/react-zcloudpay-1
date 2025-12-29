@@ -1,6 +1,22 @@
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
-const { getPool } = require('./db');
+const { getPool } = require('../config/db');
+const userCrawlerQuotaModel = require('../models/userCrawlerQuota');
+const packageSubscriptionModel = require('../models/packageSubscription');
+
+/**
+ * 生成密码的哈希值。
+ * 注意：每次调用生成的哈希值都会不同，这是正常的，因为使用了随机盐。
+ * 使用 bcrypt 生成哈希，默认 rounds=12
+ */
+async function getPasswordHash(password) {
+  const salt = await bcrypt.genSalt(12);
+  return bcrypt.hash(password, salt);
+}
+
+async function checkPasswordHash(password, hashed) {
+  return bcrypt.compare(String(password), String(hashed));
+}
 
 function setUsersHasPasswordEnc(value) {
   void value;
@@ -52,6 +68,9 @@ async function createUserWithRandomCredentials({ channelName }) {
   const userId = crypto.randomUUID();
   const passwordPlain = generateSixDigitPassword();
   const channel = (channelName || '').toString();
+  
+  // Use the new getPasswordHash function with rounds=12
+  const passwordHash = await getPasswordHash(String(passwordPlain));
 
   let seq = 1;
   try {
@@ -59,29 +78,59 @@ async function createUserWithRandomCredentials({ channelName }) {
     const c = Array.isArray(rows) && rows.length > 0 ? Number(rows[0].c || 0) : 0;
     seq = Number.isFinite(c) && c >= 0 ? c + 1 : 1;
   } catch {}
-  const username = `会员${seq}号`;
 
-  const passwordHash = await bcrypt.hash(String(passwordPlain), 10);
-  try {
-    await p.execute('INSERT INTO users (user_id, username, channel_name, password_plain, password) VALUES (?, ?, ?, ?, ?)', [
-      userId,
-      username,
-      channel,
-      passwordPlain,
-      passwordHash
-    ]);
-  } catch (err) {
-    const code = err && err.code ? String(err.code) : '';
-    if (code !== 'ER_BAD_FIELD_ERROR') throw err;
-    await p.execute('INSERT INTO users (user_id, username, channel_name, password_plain) VALUES (?, ?, ?, ?)', [
-      userId,
-      username,
-      channel,
-      passwordPlain
-    ]);
+  let attempt = 0;
+  const maxRetries = 20;
+
+  while (attempt < maxRetries) {
+    const username = `会员${seq}号`;
+    try {
+      await p.execute('INSERT INTO users (user_id, username, channel_name, password_plain, password) VALUES (?, ?, ?, ?, ?)', [
+        userId,
+        username,
+        channel,
+        passwordPlain,
+        passwordHash
+      ]);
+      // Success
+      return { user_id: userId, account: userId, username, password: passwordPlain };
+    } catch (err) {
+      const code = err && err.code ? String(err.code) : '';
+      const msg = err && err.message ? String(err.message) : '';
+
+      // Handle duplicate username
+      if (code === 'ER_DUP_ENTRY' && (msg.includes('username') || msg.includes('users.username'))) {
+        // Increment seq and retry
+        seq += crypto.randomInt(1, 10);
+        attempt++;
+        continue;
+      }
+
+      if (code !== 'ER_BAD_FIELD_ERROR') throw err;
+
+      // Fallback for old schema without 'password' column
+      try {
+        await p.execute('INSERT INTO users (user_id, username, channel_name, password_plain) VALUES (?, ?, ?, ?)', [
+          userId,
+          username,
+          channel,
+          passwordPlain
+        ]);
+        return { user_id: userId, account: userId, username, password: passwordPlain };
+      } catch (err2) {
+         const code2 = err2 && err2.code ? String(err2.code) : '';
+         const msg2 = err2 && err2.message ? String(err2.message) : '';
+         if (code2 === 'ER_DUP_ENTRY' && (msg2.includes('username') || msg2.includes('users.username'))) {
+            seq += crypto.randomInt(1, 10);
+            attempt++;
+            continue;
+         }
+         throw err2;
+      }
+    }
   }
 
-  return { user_id: userId, account: userId, username, password: passwordPlain };
+  throw new Error('Failed to create user: username conflict limit reached');
 }
 
 async function createPendingPayOrder({ outTradeNo, userId, channelName, amountFen, quotaAmount }) {
@@ -100,25 +149,63 @@ async function getBalanceByUserId(conn, userId) {
   return r && r.balance !== null && r.balance !== undefined ? Number(r.balance || 0) : 0;
 }
 
-async function ensureQuotaRowAndAddRecharge(conn, userId, addQuota, quotaSource) {
-  const [rows] = await conn.execute(
-    'SELECT id, total_recharged FROM user_crawler_quota WHERE user_id = ? ORDER BY id DESC LIMIT 1 FOR UPDATE',
-    [String(userId)]
-  );
-  const now = Date.now();
-  if (!Array.isArray(rows) || rows.length === 0) {
-    await conn.execute(
-      'INSERT INTO user_crawler_quota (user_id, total_recharged, create_time, update_time, quota_source) VALUES (?, ?, ?, ?, ?)',
-      [String(userId), Number(addQuota || 0), now, now, Number(quotaSource || 0)]
-    );
-    return;
-  }
-  const current = Number(rows[0].total_recharged || 0);
-  await conn.execute('UPDATE user_crawler_quota SET total_recharged = ?, update_time = ? WHERE id = ? LIMIT 1', [
-    current + Number(addQuota || 0),
-    now,
-    rows[0].id
+async function getUserAuth(account) {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT user_id, password_plain, password FROM users WHERE user_id = ? LIMIT 1', [
+    String(account)
   ]);
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  return rows[0];
+}
+
+async function ensureUserPasswordHash(account) {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT user_id, password_plain, password FROM users WHERE user_id = ? LIMIT 1', [
+    String(account)
+  ]);
+  if (!Array.isArray(rows) || rows.length === 0) return false;
+  const r = rows[0];
+  const hasHash = r.password !== null && r.password !== undefined && String(r.password).startsWith('$2');
+  const plain = r.password_plain === null || r.password_plain === undefined ? '' : String(r.password_plain);
+  if (hasHash) return false;
+  if (!plain) return false;
+  const hash = await getPasswordHash(plain);
+  await p.execute('UPDATE users SET password = ? WHERE user_id = ? LIMIT 1', [hash, String(r.user_id)]);
+  return true;
+}
+
+async function verifyUserPassword({ account, password }) {
+  if (!account || !password) return false;
+  const p = await getPool();
+  let user = null;
+  try {
+    const [rows] = await p.execute('SELECT user_id, password_plain, password FROM users WHERE user_id = ? LIMIT 1', [
+      String(account)
+    ]);
+    if (Array.isArray(rows) && rows.length > 0) {
+      user = rows[0];
+    }
+  } catch {
+    user = null;
+  }
+  if (!user) return false;
+  const input = String(password);
+  const storedHash = user.password === null || user.password === undefined ? '' : String(user.password);
+  const storedPlain = user.password_plain === null || user.password_plain === undefined ? '' : String(user.password_plain);
+  if (storedHash) {
+    try {
+      const ok = await bcrypt.compare(input, storedHash);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+  return storedPlain && storedPlain === input;
+}
+
+async function ensureQuotaRowAndAddRecharge(conn, userId, addQuota, quotaSource) {
+  await userCrawlerQuotaModel.upsertTotalRecharged(conn, userId, addQuota, quotaSource);
+  await packageSubscriptionModel.ensureForRecharge(conn, userId, addQuota, {});
 }
 
 async function settlePayOrder({
@@ -225,7 +312,7 @@ async function rechargeAccount(account, amount, orderNo) {
     const [userRows] = await conn.execute('SELECT user_id, channel_name, password_plain FROM users WHERE user_id = ? LIMIT 1 FOR UPDATE', [
       String(account)
     ]);
-    if (!Array.isArray(userRows) || userRows.length === 0) {
+    if (!Array.isArray(userRows) || rows.length === 0) {
       await conn.rollback();
       conn.release();
       return null;
@@ -360,7 +447,7 @@ async function getBalance(account) {
 async function getHistory(account) {
   const p = await getPool();
   const [uRows] = await p.execute('SELECT user_id FROM users WHERE user_id = ? LIMIT 1', [String(account)]);
-  if (!Array.isArray(uRows) || uRows.length === 0) return [];
+  if (!Array.isArray(uRows) || rows.length === 0) return [];
   const userId = uRows[0].user_id;
   const [rows] = await p.execute(
     'SELECT change_amount, action, create_time FROM user_quota_log WHERE user_id = ? ORDER BY create_time DESC LIMIT 200',
@@ -392,7 +479,7 @@ async function consumeCredits({ account, credits, remark }) {
     const [userRows] = await conn.execute('SELECT user_id, channel_name FROM users WHERE user_id = ? LIMIT 1 FOR UPDATE', [
       String(account).trim()
     ]);
-    if (!Array.isArray(userRows) || userRows.length === 0) {
+    if (!Array.isArray(userRows) || rows.length === 0) {
       await conn.rollback();
       conn.release();
       return { status: 404, payload: { ok: false, message: '账号不存在' }, error: null };
@@ -491,7 +578,7 @@ async function getDealerAccountLogs(dealerAccount, account) {
     'SELECT user_id FROM users WHERE user_id COLLATE utf8mb4_unicode_ci = CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci AND channel_name COLLATE utf8mb4_unicode_ci = CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci LIMIT 1',
     [String(account), String(dealerAccount)]
   );
-  if (!Array.isArray(uRows) || uRows.length === 0) return [];
+  if (!Array.isArray(uRows) || rows.length === 0) return [];
   const [rows] = await p.execute(
     'SELECT action, change_amount, create_time FROM user_quota_log WHERE user_id = ? ORDER BY create_time ASC LIMIT 200',
     [String(account)]
@@ -544,7 +631,7 @@ async function syncAllUserCrawlerQuotaTotals() {
         'SELECT id FROM user_crawler_quota WHERE user_id = ? ORDER BY id DESC LIMIT 1 FOR UPDATE',
         [userId]
       );
-      if (!Array.isArray(qRows) || qRows.length === 0) {
+      if (!Array.isArray(qRows) || rows.length === 0) {
         await conn.execute(
           'INSERT INTO user_crawler_quota (user_id, total_recharged, create_time, update_time, quota_source) VALUES (?, ?, ?, ?, ?)',
           [userId, total, now, now, 0]
@@ -573,6 +660,7 @@ async function syncAllUserCrawlerQuotaTotals() {
 
 module.exports = {
   setUsersHasPasswordEnc,
+  getPasswordHash,
   normalizePlan,
   planToAmountFen,
   planToCredits,
@@ -594,5 +682,8 @@ module.exports = {
   getLocalOrderRecord,
   getDealerOrders,
   getDealerAccounts,
-  getDealerAccountLogs
+  getDealerAccountLogs,
+  verifyUserPassword,
+  ensureUserPasswordHash,
+  checkPasswordHash
 };

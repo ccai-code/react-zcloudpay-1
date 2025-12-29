@@ -6,9 +6,9 @@ const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 
-const config = require('./wxpayConfig');
-const { generateAuthorization, decryptNotification } = require('./wxpayCrypto');
-const services = require('./services');
+const config = require('../config/wxpay');
+const { generateAuthorization, decryptNotification } = require('../utils/wxpayCrypto');
+const services = require('../services');
 
 function registerRoutes(app) {
   const jsonParser = bodyParser.json();
@@ -17,7 +17,7 @@ function registerRoutes(app) {
     return jsonParser(req, res, next);
   });
 
-  const publicDir = path.join(__dirname, 'public');
+  const publicDir = path.join(__dirname, '../../public');
   if (fs.existsSync(publicDir)) {
     app.use(express.static(publicDir));
   }

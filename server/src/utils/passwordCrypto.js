@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const config = require('./wxpayConfig');
+const config = require('../config/wxpay');
 
 function getPasswordEncryptionKey() {
   const raw = (process.env.PASSWORD_ENCRYPTION_KEY || config.apiV3Key || '').toString();
@@ -35,4 +35,3 @@ module.exports = {
   encryptPassword,
   decryptPassword
 };
-

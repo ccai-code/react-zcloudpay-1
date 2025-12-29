@@ -44,4 +44,3 @@ sPPrZRSa5NxgArzqtqo7MeTN
   domain: "https://api.mch.weixin.qq.com",
   notifyUrl: "https://pay.zhihua.chat/notify"
 };
-

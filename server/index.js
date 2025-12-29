@@ -1,28 +1,17 @@
-require('./loadEnv').loadServerEnv();
+
 
 const express = require('express');
-const registerRoutes = require('./routes');
+const cors = require('cors');
+const registerRoutes = require('./src/routes');
 
 const app = express();
-const port = 3000;
+const port = 80;
 
-app.use((req, res, next) => {
-  const origins = (process.env.CORS_ORIGINS || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-  const origin = req.headers.origin;
-  const allow = origin && origins.includes(origin);
-  if (allow) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-  return next();
-});
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
 
 registerRoutes(app);
 

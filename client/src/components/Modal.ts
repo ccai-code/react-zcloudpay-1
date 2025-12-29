@@ -1,4 +1,5 @@
-import { api } from '../utils/api'
+import { API_BASE_URL } from '../config'
+
 type Options = {
   account: string
   dealer_name: string
@@ -67,7 +68,7 @@ export const Modal = {
     let outTradeNo = ''
     const qrImg = document.getElementById('wx_qr') as HTMLImageElement | null
     if (qrImg) {
-      api('/pay', {
+      fetch(API_BASE_URL + '/pay', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ account, dealerName: dealer_name, plan }),
@@ -110,7 +111,7 @@ export const Modal = {
       if (statusAbort) statusAbort.abort()
       statusAbort = new AbortController()
 
-      api(`/api/order-status?out_trade_no=${encodeURIComponent(outTradeNo)}`, {
+      fetch(`${API_BASE_URL}/api/order-status?out_trade_no=${encodeURIComponent(outTradeNo)}`, {
         signal: statusAbort.signal
       })
         .then(r => r.json())
