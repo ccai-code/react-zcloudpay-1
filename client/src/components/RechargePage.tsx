@@ -260,7 +260,7 @@ export function RechargePage({ dealerAccount, accounts, onRefresh }: Props) {
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                           <div style={{ color: '#64748b', fontSize: 13, minWidth: 60 }}>初始密码</div>
                           <div style={{ fontWeight: 'bold', userSelect: 'all', fontFamily: 'monospace', fontSize: 15, color: '#1e293b' }}>{createdInfo.password}</div>
-                          <button className="btn btn-outline" style={{ padding: '4px 8px', fontSize: 12, height: 'auto' }} onClick={() => copyToClipboard(createdInfo.password)}>复制</button>
+                          <button className="btn btn-outline" style={{ padding: '4px 8px', fontSize: 12, height: 'auto' }} onClick={() => copyToClipboard(createdInfo.password!)}>复制</button>
                         </div>
                       )}
                     </div>
